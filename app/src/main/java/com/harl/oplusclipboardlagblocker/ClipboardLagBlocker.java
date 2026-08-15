@@ -17,10 +17,18 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
             "com.oplus.appplatform.providers.ClipboardManagerProvider";
     private static final String CLIPBOARD_CONTROLLER =
             "com.android.server.clipboard.OplusClipboardController";
+    private static final String CLASSIFICATION_HANDLER =
+            "com.android.server.clipboard.OplusClipboardController$ClassificationHandler";
+    private static final String CLASSIFIER_DELEGATE =
+            "com.android.server.clipboard.classifier.AITextClassifierDelegate";
+    private static final String CLASSIFIER_CALLBACK =
+            "com.android.server.clipboard.classifier.IAITextClassifierCallback";
     private static final String CLIPBOARD_SERVICE_EXT =
             "com.android.server.clipboard.ClipboardServiceExtImpl";
     private static final String CLASSIFICATION_METHOD = "startAIClassification";
     private static final String CLASSIFICATION_FORWARD_METHOD = "startAIClassificationLocked";
+    private static final String CLASSIFICATION_HANDLER_METHOD = "handleMessage";
+    private static final String CLASSIFIER_SEND_METHOD = "sendAITextClassification";
     private static final String PREPROCESS_METHOD = "onCommonSetPrimaryClipLocked";
     private static final AtomicBoolean APP_PLATFORM_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean SYSTEM_SERVER_INSTALLED = new AtomicBoolean(false);
@@ -53,8 +61,11 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
             serviceForwardHooked = hookClassificationMethod(
                     classLoader, CLIPBOARD_SERVICE_EXT, CLASSIFICATION_FORWARD_METHOD);
         }
+        boolean pendingMessageHooked = hookClassificationHandler(classLoader);
+        boolean classifierSendHooked = hookClassifierSend(classLoader);
 
-        if (!preprocessHooked && !controllerHooked && !serviceForwardHooked) {
+        if (!preprocessHooked && !controllerHooked && !serviceForwardHooked
+                && !pendingMessageHooked && !classifierSendHooked) {
             SYSTEM_SERVER_INSTALLED.set(false);
             log("❌ no system_server clipboard hook installed");
             return;
@@ -62,7 +73,9 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
 
         log("✅ system_server hooks installed; preprocess=" + preprocessHooked
                 + ", controller=" + controllerHooked
-                + ", serviceForwardFallback=" + serviceForwardHooked);
+                + ", serviceForwardFallback=" + serviceForwardHooked
+                + ", pendingMessage=" + pendingMessageHooked
+                + ", classifierSend=" + classifierSendHooked);
     }
 
     private static boolean hookPreprocessMethod(ClassLoader classLoader) {
@@ -120,6 +133,58 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
             return true;
         } catch (Throwable throwable) {
             log("⚠️ hook unavailable: " + className + "." + methodName);
+            XposedBridge.log(throwable);
+            return false;
+        }
+    }
+
+    private static boolean hookClassificationHandler(ClassLoader classLoader) {
+        try {
+            Class<?> messageClass = XposedHelpers.findClass("android.os.Message", classLoader);
+
+            XposedHelpers.findAndHookMethod(
+                    CLASSIFICATION_HANDLER,
+                    classLoader,
+                    CLASSIFICATION_HANDLER_METHOD,
+                    messageClass,
+                    new XC_MethodHook(XC_MethodHook.PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            param.setResult(null);
+                        }
+                    });
+            log("✅ hook installed: " + CLASSIFICATION_HANDLER + "."
+                    + CLASSIFICATION_HANDLER_METHOD);
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ hook unavailable: " + CLASSIFICATION_HANDLER + "."
+                    + CLASSIFICATION_HANDLER_METHOD);
+            XposedBridge.log(throwable);
+            return false;
+        }
+    }
+
+    private static boolean hookClassifierSend(ClassLoader classLoader) {
+        try {
+            Class<?> callbackClass = XposedHelpers.findClass(CLASSIFIER_CALLBACK, classLoader);
+
+            XposedHelpers.findAndHookMethod(
+                    CLASSIFIER_DELEGATE,
+                    classLoader,
+                    CLASSIFIER_SEND_METHOD,
+                    CharSequence.class,
+                    Long.TYPE,
+                    callbackClass,
+                    new XC_MethodHook(XC_MethodHook.PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            param.setResult(null);
+                        }
+                    });
+            log("✅ hook installed: " + CLASSIFIER_DELEGATE + "." + CLASSIFIER_SEND_METHOD);
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ hook unavailable: " + CLASSIFIER_DELEGATE + "." + CLASSIFIER_SEND_METHOD);
             XposedBridge.log(throwable);
             return false;
         }

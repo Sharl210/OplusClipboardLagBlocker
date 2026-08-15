@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Oplus剪贴板卡顿拦截</string>
-    <string name="xposed_description">拦截系统剪贴板AI分类与Oplus应用平台注册的剪贴板变化监听</string>
+    <string name="xposed_description">拦截剪贴板内容系统劫持数据预加工导致的复制异常卡顿</string>
 </resources>

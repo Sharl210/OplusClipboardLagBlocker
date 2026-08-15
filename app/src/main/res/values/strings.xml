@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Oplus剪贴板卡顿拦截</string>
+    <string name="xposed_description">拦截系统剪贴板AI分类与Oplus应用平台注册的剪贴板变化监听</string>
+</resources>

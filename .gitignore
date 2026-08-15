@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+
+# Local machine configuration
+local.properties
+
+# Build outputs
+/build/
+/app/build/
+
+# IDE files
+.idea/
+*.iml
+
+# Unused local vendor residue
+/lsp101api/

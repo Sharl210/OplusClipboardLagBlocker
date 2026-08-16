@@ -3,6 +3,7 @@ package com.harl.oplusclipboardlagblocker;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,14 +30,13 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static final String OINTENT_DETECT_METHOD = "detect";
     private static final String OINTENT_INTENT_SCENE =
             "com.oplus.ointent.detect.scene.IntentScene";
+    private static final String OINTENT_INTENT_TYPE_ARRAY =
+            "[Lcom.oplus.ointent.api.config.IntentType;";
     private static final String OINTENT_INTENT_OPTIONS =
             "com.oplus.ointent.api.base.IntentOptions";
     private static final String CLIPBOARD_SCENE_CLASS =
             "com.oplus.ointent.detect.scene.ClipboardScene";
     private static final String CLIPBOARD_SCENE_DETECT_METHOD = "detect";
-    private static final String TEXT_INTENT_MANAGER =
-            "com.oplus.textintent.manager.impl.a";
-    private static final String TEXT_INTENT_ENTRY_METHOD = "K";
     private static final String CLIPBOARD_CONTROLLER =
             "com.android.server.clipboard.OplusClipboardController";
     private static final String CLASSIFICATION_HANDLER =
@@ -51,6 +51,7 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             "android.content.ClipboardManagerExtImpl";
     private static final String CLASSIFICATION_METHOD = "startAIClassification";
     private static final String CLASSIFICATION_FORWARD_METHOD = "startAIClassificationLocked";
+    private static final String CLASSIFICATION_DISPATCH_METHOD = "handleAIClassification";
     private static final String CLASSIFICATION_HANDLER_METHOD = "handleMessage";
     private static final String CLASSIFIER_SEND_METHOD = "sendAITextClassification";
     private static final String PREPROCESS_METHOD = "onCommonSetPrimaryClipLocked";
@@ -60,11 +61,15 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static final AtomicBoolean COLOR_DIRECT_SERVICE_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean OINTENT_DETECT_HIT_LOGGED =
             new AtomicBoolean(false);
+    private static final AtomicBoolean OINTENT_TYPE_LIST_HIT_LOGGED =
+            new AtomicBoolean(false);
     private static final AtomicBoolean CLIPBOARD_SCENE_HIT_LOGGED =
             new AtomicBoolean(false);
     private static final AtomicBoolean TEXT_INTENT_ENTRY_HIT_LOGGED =
             new AtomicBoolean(false);
     private static final AtomicBoolean CLIPBOARD_RECORD_HIT_LOGGED =
+            new AtomicBoolean(false);
+    private static final AtomicBoolean CLASSIFICATION_DISPATCH_HIT_LOGGED =
             new AtomicBoolean(false);
     private static final AtomicBoolean SYSTEM_SERVER_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean FRAMEWORK_PREPROCESS_INSTALLED = new AtomicBoolean(false);
@@ -169,12 +174,14 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             serviceForwardHooked = hookClassificationMethod(
                     classLoader, CLIPBOARD_SERVICE_EXT, CLASSIFICATION_FORWARD_METHOD);
         }
+        boolean dispatchHooked = hookClassificationDispatchMethod(classLoader);
         boolean pendingMessageHooked = hookClassificationHandler(classLoader);
         boolean classifierSendHooked = hookClassifierSend(classLoader);
         boolean clipboardRecordHooked = hookClipboardRecordMethod(classLoader);
 
         if (!preprocessHooked && !controllerHooked && !serviceForwardHooked
-                && !pendingMessageHooked && !classifierSendHooked && !clipboardRecordHooked) {
+                && !dispatchHooked && !pendingMessageHooked && !classifierSendHooked
+                && !clipboardRecordHooked) {
             SYSTEM_SERVER_INSTALLED.set(false);
             log("❌ no system_server clipboard hook installed");
             return;
@@ -183,9 +190,11 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
         log("✅ system_server hooks installed; preprocess=" + preprocessHooked
                 + ", controller=" + controllerHooked
                 + ", serviceForwardFallback=" + serviceForwardHooked
+                + ", dispatch=" + dispatchHooked
                 + ", pendingMessage=" + pendingMessageHooked
                 + ", classifierSend=" + classifierSendHooked
-                + ", clipboardRecord=" + clipboardRecordHooked);
+                + ", clipboardRecord=" + clipboardRecordHooked
+                + ", total=" + HOOKED_METHODS.size());
     }
 
     private static boolean hookPreprocessMethod(ClassLoader classLoader) {
@@ -250,6 +259,43 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
         } catch (Throwable throwable) {
             log("⚠️ hook unavailable: " + CLIPBOARD_CONTROLLER + "."
                     + CLIPBOARD_RECORD_METHOD);
+            XposedBridge.log(throwable);
+            return false;
+        }
+    }
+
+
+    private static boolean hookClassificationDispatchMethod(ClassLoader classLoader) {
+        try {
+            Class<?> targetClass = XposedHelpers.findClass(CLIPBOARD_CONTROLLER, classLoader);
+            int hooked = hookDeclaredMethod(
+                    targetClass,
+                    CLASSIFICATION_DISPATCH_METHOD,
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (CLASSIFICATION_DISPATCH_HIT_LOGGED.compareAndSet(false, true)) {
+                                log("🧹 blocked clipboard AI classification dispatch (first hit)");
+                            }
+                            param.setResult(null);
+                        }
+                    },
+                    false,
+                    "void",
+                    "android.content.ClipData",
+                    "com.android.server.clipboard.classifier.IAITextClassifier",
+                    "int",
+                    "int");
+            if (hooked == 0) {
+                throw new NoSuchMethodException(CLIPBOARD_CONTROLLER + "."
+                        + CLASSIFICATION_DISPATCH_METHOD);
+            }
+            log("✅ semantic hook installed: " + CLIPBOARD_CONTROLLER + "."
+                    + CLASSIFICATION_DISPATCH_METHOD + " (overloads=" + hooked + ")");
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ hook unavailable: " + CLIPBOARD_CONTROLLER + "."
+                    + CLASSIFICATION_DISPATCH_METHOD);
             XposedBridge.log(throwable);
             return false;
         }
@@ -391,57 +437,168 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     }
 
     private static void installColorDirectServiceHook(ClassLoader classLoader, String processName) {
-        boolean textIntentHooked = hookTextIntentClipboardEntry(classLoader);
+        boolean semanticHooked = false;
+        DexKitSemanticResolver resolver = DexKitSemanticResolver.tryCreate(classLoader, false);
+        if (resolver != null) {
+            try {
+                semanticHooked = hookColorDirectSemanticMethods(resolver);
+            } finally {
+                resolver.close();
+            }
+        }
+
         boolean sceneHooked = hookClipboardSceneDetect(classLoader);
         boolean apiHooked = hookOIntentClipboardDetect(classLoader);
 
-        if (!textIntentHooked && !sceneHooked && !apiHooked) {
+        if (!semanticHooked && !sceneHooked && !apiHooked) {
             COLOR_DIRECT_SERVICE_INSTALLED.set(false);
             log("❌ no semantic ColorDirectService clipboard hook installed");
             return;
         }
 
         log("✅ semantic ColorDirectService hooks installed in " + processName
-                + "; textIntent=" + textIntentHooked
+                + "; dexkit=" + semanticHooked
                 + ", scene=" + sceneHooked
                 + ", ointent=" + apiHooked);
+
     }
 
-    private static boolean hookTextIntentClipboardEntry(ClassLoader classLoader) {
+    private static boolean hookColorDirectSemanticMethods(DexKitSemanticResolver resolver) {
+        boolean hooked = false;
+        hooked |= hookResolvedMethod(
+                "TextIntent clipboard entry",
+                resolveSemanticMethod(resolver, "TextIntent clipboard entry",
+                        new String[]{"com.oplus.textintent"}, null, false, "void",
+                        new String[]{"android.content.Context", "java.lang.Object",
+                                "java.lang.String", "java.lang.String"}, "context"),
+                blockTextIntentEntryHook());
+        hooked |= hookResolvedMethod(
+                "ClipboardScene.detect",
+                resolveSemanticMethod(resolver, "ClipboardScene.detect", new String[]{
+                        "com.oplus.ointent.detect.scene"}, new String[]{"ClipboardScene",
+                        "specialCheck start"}, false, "void", new String[]{
+                        "com.oplus.ointent.api.config.IntentInput",
+                        "com.oplus.ointent.api.config.IntentOutput"}, "ClipboardScene",
+                        "specialCheck start"),
+                blockClipboardSceneHook());
+        hooked |= hookResolvedMethod(
+                "OIntentApi.detect scene",
+                resolveSemanticMethod(resolver, "OIntentApi.detect scene", new String[]{
+                        "com.oplus.ointent.detect"}, new String[]{"OIntentApi"}, true,
+                        "java.util.List", new String[]{"android.content.Context",
+                                "com.oplus.ointent.detect.scene.IntentScene", "java.lang.String",
+                                "com.oplus.ointent.api.base.IntentOptions"}, "sceneType", "text"),
+                blockOIntentSceneHook());
+        hooked |= hookResolvedMethod(
+                "OIntentApi.detect type list",
+                resolveSemanticMethod(resolver, "OIntentApi.detect type list", new String[]{
+                        "com.oplus.ointent.detect"}, new String[]{"OIntentApi"}, true,
+                        "java.util.List", new String[]{"android.content.Context",
+                                "com.oplus.ointent.api.config.IntentType[]", "java.lang.String",
+                                "java.lang.String", "com.oplus.ointent.api.base.IntentOptions"},
+                        "typeList", "name", "text"),
+                blockOIntentTypeListHook());
+        return hooked;
+    }
+
+    private static Method resolveSemanticMethod(
+            DexKitSemanticResolver resolver,
+            String label,
+            String[] packages,
+            String[] classAnchors,
+            boolean expectedStatic,
+            String returnType,
+            String[] parameterTypes,
+            String... methodAnchors) {
         try {
-            Class<?> targetClass = XposedHelpers.findClass(TEXT_INTENT_MANAGER, classLoader);
-            int hooked = hookDeclaredMethod(
-                    targetClass,
-                    TEXT_INTENT_ENTRY_METHOD,
-                    new XC_MethodHook(PRIORITY_HIGHEST) {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            if (TEXT_INTENT_ENTRY_HIT_LOGGED.compareAndSet(false, true)) {
-                                log("🧹 blocked TextIntent clipboard entry (first hit)");
-                            }
-                            param.setResult(null);
-                        }
-                    },
-                    false,
-                    "void",
-                    "android.content.Context",
-                    "java.lang.Object",
-                    "java.lang.String",
-                    "java.lang.String");
-            if (hooked == 0) {
-                throw new NoSuchMethodException(TEXT_INTENT_MANAGER + "."
-                        + TEXT_INTENT_ENTRY_METHOD);
-            }
-            log("✅ semantic hook installed: " + TEXT_INTENT_MANAGER + "."
-                    + TEXT_INTENT_ENTRY_METHOD + " (overloads=" + hooked + ")");
-            return true;
+            return resolver.resolveUniqueMethodInPackage(
+                    label, packages, classAnchors, expectedStatic,
+                    returnType, parameterTypes, methodAnchors);
         } catch (Throwable throwable) {
-            log("⚠️ hook unavailable: " + TEXT_INTENT_MANAGER + "."
-                    + TEXT_INTENT_ENTRY_METHOD);
+            log("⚠️ DexKit semantic resolution unavailable: " + label);
             XposedBridge.log(throwable);
-            return false;
+            return null;
         }
     }
+
+    private static boolean hookResolvedMethod(String label, Method method, XC_MethodHook callback) {
+        if (method == null) {
+            return false;
+        }
+        synchronized (HOOKED_METHODS) {
+            if (HOOKED_METHODS.contains(method)) {
+                return true;
+            }
+            try {
+                XposedBridge.hookMethod(method, callback);
+                HOOKED_METHODS.add(method);
+                log("✅ DexKit semantic hook installed: " + label + " -> "
+                        + method.toGenericString());
+                return true;
+            } catch (Throwable throwable) {
+                log("⚠️ DexKit semantic hook failed: " + label);
+                XposedBridge.log(throwable);
+                return false;
+            }
+        }
+    }
+
+    private static XC_MethodHook blockTextIntentEntryHook() {
+        return new XC_MethodHook(PRIORITY_HIGHEST) {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (TEXT_INTENT_ENTRY_HIT_LOGGED.compareAndSet(false, true)) {
+                    log("🧹 blocked TextIntent clipboard entry (first hit)");
+                }
+                param.setResult(null);
+            }
+        };
+    }
+
+    private static XC_MethodHook blockClipboardSceneHook() {
+        return new XC_MethodHook(PRIORITY_HIGHEST) {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (CLIPBOARD_SCENE_HIT_LOGGED.compareAndSet(false, true)) {
+                    log("🧹 blocked semantic ClipboardScene detection (first hit)");
+                }
+                param.setResult(null);
+            }
+        };
+    }
+
+    private static XC_MethodHook blockOIntentSceneHook() {
+        return new XC_MethodHook(PRIORITY_HIGHEST) {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object scene = param.args.length > 1 ? param.args[1] : null;
+                if (!isClipboardIntentScene(scene)) {
+                    return;
+                }
+                if (OINTENT_DETECT_HIT_LOGGED.compareAndSet(false, true)) {
+                    log("🧹 blocked OIntentApi clipboard detection (first hit)");
+                }
+                param.setResult(new ArrayList<>());
+            }
+        };
+    }
+
+    private static XC_MethodHook blockOIntentTypeListHook() {
+        return new XC_MethodHook(PRIORITY_HIGHEST) {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (param.args.length < 4 || !isClipboardIntentTypeList(param.args[1])) {
+                    return;
+                }
+                if (OINTENT_TYPE_LIST_HIT_LOGGED.compareAndSet(false, true)) {
+                    log("🧹 blocked OIntentApi clipboard type-list detection (first hit)");
+                }
+                param.setResult(new ArrayList<>());
+            }
+        };
+    }
+
+
 
     private static boolean hookClipboardSceneDetect(ClassLoader classLoader) {
         try {
@@ -479,7 +636,7 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static boolean hookOIntentClipboardDetect(ClassLoader classLoader) {
         try {
             Class<?> targetClass = XposedHelpers.findClass(OINTENT_API_CLASS, classLoader);
-            XC_MethodHook callback = new XC_MethodHook(PRIORITY_HIGHEST) {
+            XC_MethodHook sceneCallback = new XC_MethodHook(PRIORITY_HIGHEST) {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     Object scene = param.args.length > 1 ? param.args[1] : null;
@@ -489,13 +646,13 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
                     if (OINTENT_DETECT_HIT_LOGGED.compareAndSet(false, true)) {
                         log("🧹 blocked OIntentApi clipboard detection (first hit)");
                     }
-                    param.setResult(Collections.emptyList());
+                    param.setResult(new ArrayList<>());
                 }
             };
             int hooked = hookDeclaredMethod(
                     targetClass,
                     OINTENT_DETECT_METHOD,
-                    callback,
+                    sceneCallback,
                     true,
                     "java.util.List",
                     "android.content.Context",
@@ -504,11 +661,22 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             hooked += hookDeclaredMethod(
                     targetClass,
                     OINTENT_DETECT_METHOD,
-                    callback,
+                    sceneCallback,
                     true,
                     "java.util.List",
                     "android.content.Context",
                     OINTENT_INTENT_SCENE,
+                    "java.lang.String",
+                    OINTENT_INTENT_OPTIONS);
+            hooked += hookDeclaredMethod(
+                    targetClass,
+                    OINTENT_DETECT_METHOD,
+                    blockOIntentTypeListHook(),
+                    true,
+                    "java.util.List",
+                    "android.content.Context",
+                    OINTENT_INTENT_TYPE_ARRAY,
+                    "java.lang.String",
                     "java.lang.String",
                     OINTENT_INTENT_OPTIONS);
             if (hooked == 0) {
@@ -531,6 +699,19 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             return "CLIPBOARD".equals(((Enum<?>) scene).name());
         }
         return scene != null && "CLIPBOARD".equals(String.valueOf(scene));
+    }
+
+    private static boolean isClipboardIntentTypeList(Object typeList) {
+        if (!(typeList instanceof Object[])) {
+            return false;
+        }
+        Object[] types = (Object[]) typeList;
+        for (Object type : types) {
+            if (type instanceof Enum<?> && "TOKEN".equals(((Enum<?>) type).name())) {
+                return true;
+            }
+        }
+        return false;
     }
 
 

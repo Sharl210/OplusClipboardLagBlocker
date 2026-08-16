@@ -10,8 +10,8 @@ android {
         applicationId = "com.harl.oplusclipboardlagblocker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
     }
 
     buildTypes {
@@ -29,4 +29,5 @@ android {
 
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
+    implementation("org.luckypray:dexkit:2.2.0")
 }

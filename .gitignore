@@ -13,4 +13,6 @@ local.properties
 *.iml
 
 # Unused local vendor residue
+/device-evidence/
+/device-binaries/
 /lsp101api/

@@ -2,5 +2,6 @@
     <string-array name="xposed_scope">
         <item>android</item>
         <item>com.oplus.appplatform</item>
+        <item>com.coloros.colordirectservice</item>
     </string-array>
 </resources>

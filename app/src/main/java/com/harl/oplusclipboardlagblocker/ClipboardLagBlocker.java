@@ -35,9 +35,6 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             "[Lcom.oplus.ointent.api.config.IntentType;";
     private static final String OINTENT_INTENT_OPTIONS =
             "com.oplus.ointent.api.base.IntentOptions";
-    private static final String TEXT_INTENT_MANAGER =
-            "com.oplus.textintent.manager.impl.a";
-    private static final String TEXT_INTENT_ENTRY_METHOD = "K";
     private static final String CLIPBOARD_SCENE_CLASS =
             "com.oplus.ointent.detect.scene.ClipboardScene";
     private static final String CLIPBOARD_SCENE_DETECT_METHOD = "detect";
@@ -427,7 +424,7 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static void installAppPlatformHook(
             ClassLoader classLoader, String processName, AtomicBoolean installState) {
         try {
-            Class<?> targetClass = XposedHelpers.findClass(TARGET_PROVIDER, classLoader);
+            Class<?> targetClass = findClassInLoaderChain(TARGET_PROVIDER, classLoader);
             int hooked = hookDeclaredMethod(
                     targetClass,
                     "addPrimaryClipChangedListener",
@@ -452,6 +449,18 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             XposedBridge.log(throwable);
         }
     }
+    private static Class<?> findClassInLoaderChain(
+            String className, ClassLoader classLoader) throws ClassNotFoundException {
+        ClassLoader current = classLoader;
+        while (current != null) {
+            try {
+                return Class.forName(className, false, current);
+            } catch (ClassNotFoundException ignored) {
+                current = current.getParent();
+            }
+        }
+        return Class.forName(className, false, null);
+    }
 
     private static void installColorDirectServiceHook(ClassLoader classLoader, String processName) {
         boolean semanticHooked = false;
@@ -464,11 +473,10 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             }
         }
 
-        boolean textIntentHooked = hookTextIntentClipboardEntry(classLoader);
         boolean sceneHooked = hookClipboardSceneDetect(classLoader);
         boolean apiHooked = hookOIntentClipboardDetect(classLoader);
 
-        if (!semanticHooked && !textIntentHooked && !sceneHooked && !apiHooked) {
+        if (!semanticHooked && !sceneHooked && !apiHooked) {
             COLOR_DIRECT_SERVICE_INSTALLED.set(false);
             log("❌ no semantic ColorDirectService clipboard hook installed");
             return;
@@ -476,38 +484,10 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
 
         log("✅ semantic ColorDirectService hooks installed in " + processName
                 + "; dexkit=" + semanticHooked
-                + ", textIntent=" + textIntentHooked
                 + ", scene=" + sceneHooked
                 + ", ointent=" + apiHooked);
     }
 
-    private static boolean hookTextIntentClipboardEntry(ClassLoader classLoader) {
-        try {
-            Class<?> targetClass = XposedHelpers.findClass(TEXT_INTENT_MANAGER, classLoader);
-            int hooked = hookDeclaredMethod(
-                    targetClass,
-                    TEXT_INTENT_ENTRY_METHOD,
-                    blockTextIntentEntryHook(),
-                    false,
-                    "void",
-                    "android.content.Context",
-                    "java.lang.Object",
-                    "java.lang.String",
-                    "java.lang.String");
-            if (hooked == 0) {
-                throw new NoSuchMethodException(TEXT_INTENT_MANAGER + "."
-                        + TEXT_INTENT_ENTRY_METHOD);
-            }
-            log("✅ named TextIntent fallback installed: " + TEXT_INTENT_MANAGER + "."
-                    + TEXT_INTENT_ENTRY_METHOD + " (overloads=" + hooked + ")");
-            return true;
-        } catch (Throwable throwable) {
-            log("⚠️ named TextIntent fallback unavailable: " + TEXT_INTENT_MANAGER + "."
-                    + TEXT_INTENT_ENTRY_METHOD);
-            XposedBridge.log(throwable);
-            return false;
-        }
-    }
 
     private static boolean hookColorDirectSemanticMethods(DexKitSemanticResolver resolver) {
         boolean hooked = false;

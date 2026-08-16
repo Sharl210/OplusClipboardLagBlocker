@@ -36,7 +36,7 @@
 
 1. 安装 Release APK。
 2. 在 LSPosed 中启用「Oplus剪贴板卡顿拦截」。
-3. 保持 `android`/`system`（按 LSPosed 显示的系统进程项）、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 作用域；框架类的 Zygote Hook 会在包含 ColorOS `ClipboardManagerExtImpl` 的应用进程中生效，应用平台保险 Hook 会优先覆盖实际承载 Provider 的 `system` 进程，ColorDirectService Hook 则在其自身进程中生效。
+3. 保持 `android`、`system`、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 作用域；其中 `system` 用于覆盖实际承载 `ClipboardManagerProvider` 的系统进程。框架类的 Zygote Hook 会在包含 ColorOS `ClipboardManagerExtImpl` 的应用进程中生效，应用平台保险 Hook 会优先覆盖实际承载 Provider 的 `system` 进程，ColorDirectService Hook 则在其自身进程中生效。
 4. 重启设备，或确保相关应用进程、`system_server`、`system`、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 在启用模块后重新启动。
 
 旧进程中已经存在的处理状态或监听对象不会被模块枚举清除；重启相关进程后才会完全应用新的 Hook。
@@ -72,9 +72,9 @@ adb logcat -d | grep -F '🛡️ OplusClipboardLagBlocker'
 
 ## 风险与兼容性
 
-- ColorDirectService 启动时会在其加载回调内同步初始化 DexKit，并使用单线程/单并发查询；这可能增加该进程启动阶段的时间和内存峰值。DexKit 无法加载、初始化失败或候选不唯一时，仍使用已验证的命名 TextIntent `com.oplus.textintent.manager.impl.a.K(...)` 以及结构明确的 Scene/API 回退；模块捕获初始化与解析异常，不应因 DexKit 失败阻塞系统启动。
-- ColorDirectService Hook 会阻断通过 DexKit 解析到的 TextIntent 剪贴板入口、`ClipboardScene.detect(...)` 及剪贴板场景/`TOKEN` 类型列表的 `OIntentApi.detect(...)` 重载，因而同时停用该进程的剪贴板意图识别、相关 AI/NLP 和流动胶囊推荐能力；DexKit 无法加载、初始化失败或候选不唯一时，仍使用已验证的命名 TextIntent `com.oplus.textintent.manager.impl.a.K(...)` 以及结构明确的 Scene/API 回退，不猜测新的混淆入口。
-- 应用平台保险 Hook 会关闭依赖该 Provider 的剪贴板变化回调；已确认该 Provider 可能在 `system` 进程中运行，模块会按当前 ClassLoader 重新尝试安装；如果目标 ROM 没有对应类或签名，该层会记录失败，不影响其他 Hook。
+- ColorDirectService 启动时会在其加载回调内同步初始化 DexKit，并使用单线程/单并发查询；这可能增加该进程启动阶段的时间和内存峰值。DexKit 无法加载、初始化失败或候选不唯一时，不会猜测或安装混淆 TextIntent 入口，仅保留已命名且精确签名的 `ClipboardScene.detect(...)` 与 `OIntentApi.detect(...)` Scene/API 回退；模块捕获初始化与解析异常，不应因 DexKit 失败阻塞系统启动。
+- ColorDirectService Hook 在 DexKit 唯一解析成功时阻断语义 TextIntent 剪贴板入口，并始终尝试阻断 `ClipboardScene.detect(...)` 及剪贴板场景/`TOKEN` 类型列表的 `OIntentApi.detect(...)` 重载；DexKit 不可用时，TextIntent 入口层可能未覆盖，这是为避免混淆类名/方法名误拦其他逻辑而保留的明确边界。
+- 应用平台保险 Hook 会关闭依赖该 Provider 的剪贴板变化回调；已确认该 Provider 可能在 `system` 进程中运行，模块会沿当前 ClassLoader 及其父加载器链尝试安装；当前工作环境未完成重启后的实际加载回调复测，若目标 ROM 的 Provider 位于不可见的独立加载器中，该层会记录失败，不影响其他 Hook。
 - 本版本不拦截 `hookGetPrimaryClipResult` 读取路径，因此不会主动绕过 ColorOS 的粘贴权限、敏感内容和剪贴板规则判断；如果实测卡顿发生在粘贴而非复制，需要单独评估读取路径 Hook。
 - 本版本针对已确认的 Oplus/ColorOS 实现，不保证适用于 AOSP、其他厂商 ROM 或不同 ColorOS 大版本。
 

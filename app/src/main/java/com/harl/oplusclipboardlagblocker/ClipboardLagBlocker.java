@@ -3,12 +3,15 @@ package com.harl.oplusclipboardlagblocker;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.IXposedHookZygoteInit;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
-public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
+import static de.robv.android.xposed.XC_MethodHook.PRIORITY_HIGHEST;
+
+public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String TAG = "🛡️ OplusClipboardLagBlocker";
     private static final String SYSTEM_SERVER_PACKAGE = "android";
     private static final String SYSTEM_SERVER_PROCESS = "android";
@@ -25,14 +28,27 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
             "com.android.server.clipboard.classifier.IAITextClassifierCallback";
     private static final String CLIPBOARD_SERVICE_EXT =
             "com.android.server.clipboard.ClipboardServiceExtImpl";
+    private static final String FRAMEWORK_CLIPBOARD_EXT =
+            "android.content.ClipboardManagerExtImpl";
     private static final String CLASSIFICATION_METHOD = "startAIClassification";
     private static final String CLASSIFICATION_FORWARD_METHOD = "startAIClassificationLocked";
     private static final String CLASSIFICATION_HANDLER_METHOD = "handleMessage";
     private static final String CLASSIFIER_SEND_METHOD = "sendAITextClassification";
     private static final String PREPROCESS_METHOD = "onCommonSetPrimaryClipLocked";
+    private static final String FRAMEWORK_PREPROCESS_METHOD = "checkBeforeSetPrimaryClip";
     private static final AtomicBoolean APP_PLATFORM_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean SYSTEM_SERVER_INSTALLED = new AtomicBoolean(false);
+    private static final AtomicBoolean FRAMEWORK_PREPROCESS_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean PREPROCESS_HIT_LOGGED = new AtomicBoolean(false);
+    private static final AtomicBoolean FRAMEWORK_PREPROCESS_HIT_LOGGED =
+            new AtomicBoolean(false);
+    private static final AtomicBoolean FRAMEWORK_METADATA_FAILURE_LOGGED =
+            new AtomicBoolean(false);
+
+    @Override
+    public void initZygote(IXposedHookZygoteInit.StartupParam startupParam) {
+        installFrameworkClipboardHook();
+    }
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -50,6 +66,55 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage {
         }
 
         installAppPlatformHook(loadPackageParam.classLoader, loadPackageParam.processName);
+    }
+
+    private static void installFrameworkClipboardHook() {
+        if (!FRAMEWORK_PREPROCESS_INSTALLED.compareAndSet(false, true)) {
+            return;
+        }
+
+        try {
+            Class<?> clipDataClass = XposedHelpers.findClass("android.content.ClipData", null);
+            XposedHelpers.findAndHookMethod(
+                    FRAMEWORK_CLIPBOARD_EXT,
+                    null,
+                    FRAMEWORK_PREPROCESS_METHOD,
+                    String.class,
+                    clipDataClass,
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (FRAMEWORK_PREPROCESS_HIT_LOGGED.compareAndSet(false, true)) {
+                                log("🧹 blocked app-side clipboard pre-processing (first hit)");
+                            }
+                            preserveBasicClipboardMetadata(param.args[0], param.args[1]);
+                            param.setResult(null);
+                        }
+                    });
+            log("✅ zygote hook installed: " + FRAMEWORK_CLIPBOARD_EXT + "."
+                    + FRAMEWORK_PREPROCESS_METHOD);
+        } catch (Throwable throwable) {
+            FRAMEWORK_PREPROCESS_INSTALLED.set(false);
+            log("⚠️ hook unavailable: " + FRAMEWORK_CLIPBOARD_EXT + "."
+                    + FRAMEWORK_PREPROCESS_METHOD);
+            XposedBridge.log(throwable);
+        }
+    }
+
+    private static void preserveBasicClipboardMetadata(Object packageName, Object clipData) {
+        if (clipData == null) {
+            return;
+        }
+        try {
+            Object clipDataWrapper = XposedHelpers.callMethod(clipData, "getClipDataWrapper");
+            Object clipDataExt = XposedHelpers.callMethod(clipDataWrapper, "getExtImpl");
+            XposedHelpers.callMethod(clipDataExt, "setPrimaryClipPackage", packageName);
+        } catch (Throwable throwable) {
+            if (FRAMEWORK_METADATA_FAILURE_LOGGED.compareAndSet(false, true)) {
+                log("⚠️ basic clipboard package preservation failed");
+                XposedBridge.log(throwable);
+            }
+        }
     }
 
     private static void installSystemServerHooks(ClassLoader classLoader) {

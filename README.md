@@ -4,24 +4,22 @@
 
 ## 作用
 
-模块提供多层剪贴板拦截：
+模块提供三层剪贴板拦截：
 
-1. 在 `system_server` 中拦截 `ClipboardServiceExtImpl.onCommonSetPrimaryClipLocked(Context, boolean, ClipData)`，阻断剪贴板写入后的 `ClipData.toString()`、调用方哈希计算和统计上报。
-2. 拦截 `OplusClipboardController.startAIClassification(...)`，并保留 `ClipboardServiceExtImpl.startAIClassificationLocked(...)` 回退入口。
-3. 拦截 `OplusClipboardController$ClassificationHandler.handleMessage(Message)`，丢弃模块加载前已经排队的分类消息。
-4. 拦截 `AITextClassifierDelegate.sendAITextClassification(...)`，阻断分类文本通过 Messenger 发往 `com.oplus.securitypermission`。
-5. 在 `com.oplus.appplatform` 中拦截 `ClipboardManagerProvider.addPrimaryClipChangedListener(...)`，作为应用平台监听链路的保险拦截。
+1. 在 Zygote 阶段拦截框架类 `android.content.ClipboardManagerExtImpl.checkBeforeSetPrimaryClip(String, ClipData)`，跳过应用侧复制前的调用栈采集、写入路径遍历与规则匹配；保留来源包名写入，不主动重写已有的 `ClipDataExt` 用户写入标记。
+2. 在 `system_server` 中拦截 `ClipboardServiceExtImpl.onCommonSetPrimaryClipLocked(Context, boolean, ClipData)`，阻断剪贴板写入后的 `ClipData.toString()`、调用方哈希计算和统计上报。
+3. 拦截 ColorOS AI 分类和应用平台监听链路：`OplusClipboardController.startAIClassification(...)`、`ClipboardServiceExtImpl.startAIClassificationLocked(...)`、`OplusClipboardController$ClassificationHandler.handleMessage(Message)`、`AITextClassifierDelegate.sendAITextClassification(...)` 与 `ClipboardManagerProvider.addPrimaryClipChangedListener(...)`。
 
-以上均为入口级阻断，不修改系统设置或剪贴板内容。
+以上均为入口级阻断，不修改系统设置或剪贴板正文；应用侧 Hook 会跳过 ColorOS 的复制来源规则识别。
 
 ## 已核对的 ROM 证据
 
+- `ClipboardManagerExtImpl.checkBeforeSetPrimaryClip(...)` 位于普通应用复制前路径，会读取写入路径规则、调用 `Thread.currentThread().getStackTrace()` 并遍历规则；这是当前模块新增的应用侧卡顿候选。
+- `ClipboardScene` 位于 `com.coloros.colordirectservice` 的 textintent 识别链，是复制事件后的拉取式检测器，本身不注册系统剪贴板监听；当前不扩大到该进程。
 - `ClipboardServiceExtImpl.onCommonSetPrimaryClipLocked(...)` 是 ColorOS 扩展的复制后处理：读取扩展、调用 `ClipData.toString()`、保存统计字符串、计算调用方 SHA-256 并上报 `SetPrimaryClip`；它不是标准剪贴板保存本身。
 - `OplusClipboardController.startAIClassification(...)` 受 `oplus.software.clipboard_ai_protect` 与 `clipboard_ai_smart_protection` 双重条件控制，随后向 `com.oplus.securitypermission` 的分类服务发送文本；分类 Handler 和发送代理均已设置拦截。
 - `ClipboardManagerProvider` 会注册 `OnPrimaryClipChangedListener`，模块保留该 Hook 作为应用平台保险。
 - `hookGetPrimaryClipResult(...)` 及其 `clipboardAccessResult(...)` 属于粘贴/读取路径，不与复制写入路径混同；本版本不默认禁用读取权限、敏感内容和剪贴板规则判断。
-
-模块不修改系统设置值，而是在已确认的入口处阻断处理，因此禁用模块即可恢复原行为。
 
 ## 使用条件
 
@@ -30,15 +28,12 @@
 - 设备的系统框架类名和方法签名与本文档记录的 ColorOS Android 16 版本一致或兼容。
 
 ## 安装与启用
-
 1. 安装 Release APK。
 2. 在 LSPosed 中启用「Oplus剪贴板卡顿拦截」。
-3. 作用域会由模块推荐为：
-   - `system`（legacy 元数据使用 `android` 包名，由 LSPosed 映射为系统框架）
-   - `com.oplus.appplatform`
-4. 重启设备，或确保 `system_server` 与 `com.oplus.appplatform` 在启用模块后重新启动。
+3. 保持 `android` 与 `com.oplus.appplatform` 作用域；框架类的 Zygote Hook 会在包含 ColorOS `ClipboardManagerExtImpl` 的应用进程中生效，不需要把 ColorDirectService 加入作用域。
+4. 重启设备，或确保相关应用进程、`system_server` 与 `com.oplus.appplatform` 在启用模块后重新启动。
 
-旧进程中已经存在的处理状态或监听对象不会被模块枚举清除；重启对应进程后才会完全应用新的 Hook。
+旧进程中已经存在的处理状态或监听对象不会被模块枚举清除；重启相关进程后才会完全应用新的 Hook。
 
 ## 构建
 
@@ -54,21 +49,13 @@ app/build/outputs/apk/release/app-release.apk
 
 当前工程的 Release 构建沿用 Android Gradle Plugin 的 debug 签名，适合个人设备安装和验证，不代表正式发布签名。
 
-## 验证
-
 启用模块并重启后，可查看带醒目前缀的 Xposed 日志：
 
 ```bash
 adb logcat -d | grep -F '🛡️ OplusClipboardLagBlocker'
 ```
 
-可只读查看系统开关当前值：
-
-```bash
-adb shell settings get secure clipboard_ai_smart_protection
-```
-
-模块日志应出现系统框架 Hook、分类队列/发送防线和应用平台保险 Hook 的安装记录；复制文本后不应再触发被拦截方法的原始预处理、分类排队或分类服务发送。是否完全消除卡顿仍需在目标设备上以相同文本和前台应用复测。
+应看到 `zygote hook installed: android.content.ClipboardManagerExtImpl.checkBeforeSetPrimaryClip`、系统框架 Hook 安装记录，以及首次复制后的 `blocked app-side clipboard pre-processing`。复制文本后不应再执行应用侧写入路径规则匹配、系统侧预处理、分类排队或分类服务发送。是否完全消除卡顿仍需在目标设备上以相同文本和前台应用复测。
 
 ## 回滚
 
@@ -79,11 +66,12 @@ adb shell settings get secure clipboard_ai_smart_protection
 
 ## 风险与兼容性
 
+- 应用侧 Hook 会跳过 ColorOS 对复制调用者的写入路径/调用栈识别，但只保留来源包名，不主动重写已有的用户写入标记；依赖该标记区分用户复制与程序写入的功能仍可能受影响，因为规则识别本身被跳过。
 - 拦截系统预处理、分类队列和分类发送会同时停用 ColorOS 的剪贴板敏感内容标记和相关推荐能力，不只是降低耗时。
 - 应用平台保险 Hook 会关闭依赖该 Provider 的剪贴板变化回调。
 - 本版本不拦截 `hookGetPrimaryClipResult` 读取路径，因此不会主动绕过 ColorOS 的粘贴权限、敏感内容和规则判断；如果实测卡顿发生在粘贴而非复制，需要单独评估读取路径 Hook。
 - ColorOS 更新可能修改类名、参数或分类链路；Hook 失败时模块只记录日志，不应阻塞系统启动。
-- 该模块针对已确认的 Oplus/ColorOS 实现，不保证适用于 AOSP、其他厂商 ROM 或不同 ColorOS 大版本。
+- 本版本针对已确认的 Oplus/ColorOS 实现，不保证适用于 AOSP、其他厂商 ROM 或不同 ColorOS 大版本。
 
 ## 许可
 

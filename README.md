@@ -23,6 +23,7 @@
 - `OplusClipboardController.updateClipboardOpRecord(...)` 是复制写入记录入口；当前版本只拦截控制器入口，不拦截其内部状态记录器，避免破坏后续用于判断用户显式设置的状态。
 - `OplusClipboardController.startAIClassification(...)` 受 `oplus.software.clipboard_ai_protect` 与 `clipboard_ai_smart_protection` 双重条件控制，随后向 `com.oplus.securitypermission` 的分类服务发送文本；当前版本同时拦截分类启动、内部 `handleAIClassification` 咽喉、分类 Handler 和发送代理。
 - `ClipboardManagerProvider` 会注册 `OnPrimaryClipChangedListener`，模块保留该 Hook 作为应用平台保险。
+- 已采集设备上该 Provider 属于 `com.oplus.appplatform`，但实际运行在 `system` 进程；模块同时尝试 system 进程与普通 appplatform 进程的对应 ClassLoader。
 - `hookGetPrimaryClipResult(...)` 及其 `clipboardAccessResult(...)` 属于粘贴/读取路径，不与复制写入路径混同；本版本不默认禁用读取权限、敏感内容和剪贴板规则判断。
 
 ## 使用条件
@@ -35,8 +36,8 @@
 
 1. 安装 Release APK。
 2. 在 LSPosed 中启用「Oplus剪贴板卡顿拦截」。
-3. 保持 `android`、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 作用域；框架类的 Zygote Hook 会在包含 ColorOS `ClipboardManagerExtImpl` 的应用进程中生效，ColorDirectService Hook 则在其自身进程中生效。
-4. 重启设备，或确保相关应用进程、`system_server`、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 在启用模块后重新启动。
+3. 保持 `android`/`system`（按 LSPosed 显示的系统进程项）、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 作用域；框架类的 Zygote Hook 会在包含 ColorOS `ClipboardManagerExtImpl` 的应用进程中生效，应用平台保险 Hook 会优先覆盖实际承载 Provider 的 `system` 进程，ColorDirectService Hook 则在其自身进程中生效。
+4. 重启设备，或确保相关应用进程、`system_server`、`system`、`com.oplus.appplatform` 与 `com.coloros.colordirectservice` 在启用模块后重新启动。
 
 旧进程中已经存在的处理状态或监听对象不会被模块枚举清除；重启相关进程后才会完全应用新的 Hook。
 
@@ -60,7 +61,7 @@ app/build/outputs/apk/release/app-release.apk
 adb logcat -d | grep -F '🛡️ OplusClipboardLagBlocker'
 ```
 
-应看到 Zygote、`system_server` 和 `ColorDirectService` 的安装结果，以及首次复制后的相应 `blocked ... (first hit)` 日志；`system_server` 安装行还会报告 `total=N`。复制文本后不应再执行应用侧写入路径规则匹配、系统侧预处理、分类排队、分类服务发送、写入记录或 ColorDirectService 的 TextIntent 识别。是否完全消除卡顿仍需在目标设备上以相同文本和前台应用复测。
+应看到 Zygote、`system_server`、`system`/`com.oplus.appplatform` 和 `ColorDirectService` 的安装结果，以及首次复制后的相应 `blocked ... (first hit)` 日志；`system_server` 安装行还会报告 `total=N`。复制文本后不应再执行应用侧写入路径规则匹配、系统侧预处理、分类排队、分类服务发送、写入记录或 ColorDirectService 的 TextIntent 识别。是否完全消除卡顿仍需在目标设备上以相同文本和前台应用复测。
 
 ## 回滚
 
@@ -71,10 +72,10 @@ adb logcat -d | grep -F '🛡️ OplusClipboardLagBlocker'
 
 ## 风险与兼容性
 
+- ColorDirectService 启动时会在其加载回调内同步初始化 DexKit，并使用单线程/单并发查询；这可能增加该进程启动阶段的时间和内存峰值。DexKit 无法加载、初始化失败或候选不唯一时，仍使用已验证的命名 TextIntent `com.oplus.textintent.manager.impl.a.K(...)` 以及结构明确的 Scene/API 回退；模块捕获初始化与解析异常，不应因 DexKit 失败阻塞系统启动。
 - ColorDirectService Hook 会阻断通过 DexKit 解析到的 TextIntent 剪贴板入口、`ClipboardScene.detect(...)` 及剪贴板场景/`TOKEN` 类型列表的 `OIntentApi.detect(...)` 重载，因而同时停用该进程的剪贴板意图识别、相关 AI/NLP 和流动胶囊推荐能力；DexKit 无法加载、初始化失败或候选不唯一时，仍使用已验证的命名 TextIntent `com.oplus.textintent.manager.impl.a.K(...)` 以及结构明确的 Scene/API 回退，不猜测新的混淆入口。
-- 应用平台保险 Hook 会关闭依赖该 Provider 的剪贴板变化回调；如果目标 ROM 没有 `ClipboardManagerProvider`，该层会记录失败，不影响其他 Hook。
-- 本版本不拦截 `hookGetPrimaryClipResult` 读取路径，因此不会主动绕过 ColorOS 的粘贴权限、敏感内容和规则判断；如果实测卡顿发生在粘贴而非复制，需要单独评估读取路径 Hook。
-- ColorOS 更新可能修改类名、参数或分类链路；Hook 通过声明类、静态/实例属性、返回值和精确参数类型匹配，并对 TextIntent 入口使用唯一语义候选约束，对分类发送的时间戳参数保留兼容候选。Hook 失败时模块只记录日志，不应阻塞系统启动。
+- 应用平台保险 Hook 会关闭依赖该 Provider 的剪贴板变化回调；已确认该 Provider 可能在 `system` 进程中运行，模块会按当前 ClassLoader 重新尝试安装；如果目标 ROM 没有对应类或签名，该层会记录失败，不影响其他 Hook。
+- 本版本不拦截 `hookGetPrimaryClipResult` 读取路径，因此不会主动绕过 ColorOS 的粘贴权限、敏感内容和剪贴板规则判断；如果实测卡顿发生在粘贴而非复制，需要单独评估读取路径 Hook。
 - 本版本针对已确认的 Oplus/ColorOS 实现，不保证适用于 AOSP、其他厂商 ROM 或不同 ColorOS 大版本。
 
 ## 许可

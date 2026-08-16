@@ -21,6 +21,7 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static final String TAG = "🛡️ OplusClipboardLagBlocker";
     private static final String SYSTEM_SERVER_PACKAGE = "android";
     private static final String SYSTEM_SERVER_PROCESS = "android";
+    private static final String SYSTEM_APP_PROCESS = "system";
     private static final String TARGET_PACKAGE = "com.oplus.appplatform";
     private static final String COLOR_DIRECT_SERVICE_PACKAGE = "com.coloros.colordirectservice";
     private static final String TARGET_PROVIDER =
@@ -61,6 +62,8 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static final String CLIPBOARD_RECORD_METHOD = "updateClipboardOpRecord";
     private static final String FRAMEWORK_PREPROCESS_METHOD = "checkBeforeSetPrimaryClip";
     private static final AtomicBoolean APP_PLATFORM_INSTALLED = new AtomicBoolean(false);
+    private static final AtomicBoolean APP_PLATFORM_SYSTEM_INSTALLED =
+            new AtomicBoolean(false);
     private static final AtomicBoolean COLOR_DIRECT_SERVICE_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean OINTENT_DETECT_HIT_LOGGED =
             new AtomicBoolean(false);
@@ -98,10 +101,20 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             return;
         }
 
-        // 不绑定默认进程名，兼容ROM将Provider迁移到命名进程的情况。
+        // Provider可能归属于android或com.oplus.appplatform，但已证实例运行在system进程。
+        if (SYSTEM_APP_PROCESS.equals(loadPackageParam.processName)
+                && APP_PLATFORM_SYSTEM_INSTALLED.compareAndSet(false, true)) {
+            installAppPlatformHook(loadPackageParam.classLoader,
+                    loadPackageParam.processName + "/" + loadPackageParam.packageName,
+                    APP_PLATFORM_SYSTEM_INSTALLED);
+            return;
+        }
+
+        // 普通ROM中Provider仍可能运行在com.oplus.appplatform自身进程。
         if (TARGET_PACKAGE.equals(loadPackageParam.packageName)
                 && APP_PLATFORM_INSTALLED.compareAndSet(false, true)) {
-            installAppPlatformHook(loadPackageParam.classLoader, loadPackageParam.processName);
+            installAppPlatformHook(loadPackageParam.classLoader, loadPackageParam.processName,
+                    APP_PLATFORM_INSTALLED);
             return;
         }
 
@@ -411,7 +424,8 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     }
 
 
-    private static void installAppPlatformHook(ClassLoader classLoader, String processName) {
+    private static void installAppPlatformHook(
+            ClassLoader classLoader, String processName, AtomicBoolean installState) {
         try {
             Class<?> targetClass = XposedHelpers.findClass(TARGET_PROVIDER, classLoader);
             int hooked = hookDeclaredMethod(
@@ -433,8 +447,8 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             log("✅ semantic appplatform hook installed in " + processName
                     + " (overloads=" + hooked + ")");
         } catch (Throwable throwable) {
-            APP_PLATFORM_INSTALLED.set(false);
-            log("❌ appplatform hook installation failed");
+            installState.set(false);
+            log("❌ appplatform hook installation failed in " + processName);
             XposedBridge.log(throwable);
         }
     }

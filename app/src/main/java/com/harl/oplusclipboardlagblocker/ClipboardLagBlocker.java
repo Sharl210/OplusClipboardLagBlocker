@@ -34,6 +34,9 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             "[Lcom.oplus.ointent.api.config.IntentType;";
     private static final String OINTENT_INTENT_OPTIONS =
             "com.oplus.ointent.api.base.IntentOptions";
+    private static final String TEXT_INTENT_MANAGER =
+            "com.oplus.textintent.manager.impl.a";
+    private static final String TEXT_INTENT_ENTRY_METHOD = "K";
     private static final String CLIPBOARD_SCENE_CLASS =
             "com.oplus.ointent.detect.scene.ClipboardScene";
     private static final String CLIPBOARD_SCENE_DETECT_METHOD = "detect";
@@ -447,10 +450,11 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             }
         }
 
+        boolean textIntentHooked = hookTextIntentClipboardEntry(classLoader);
         boolean sceneHooked = hookClipboardSceneDetect(classLoader);
         boolean apiHooked = hookOIntentClipboardDetect(classLoader);
 
-        if (!semanticHooked && !sceneHooked && !apiHooked) {
+        if (!semanticHooked && !textIntentHooked && !sceneHooked && !apiHooked) {
             COLOR_DIRECT_SERVICE_INSTALLED.set(false);
             log("❌ no semantic ColorDirectService clipboard hook installed");
             return;
@@ -458,9 +462,37 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
 
         log("✅ semantic ColorDirectService hooks installed in " + processName
                 + "; dexkit=" + semanticHooked
+                + ", textIntent=" + textIntentHooked
                 + ", scene=" + sceneHooked
                 + ", ointent=" + apiHooked);
+    }
 
+    private static boolean hookTextIntentClipboardEntry(ClassLoader classLoader) {
+        try {
+            Class<?> targetClass = XposedHelpers.findClass(TEXT_INTENT_MANAGER, classLoader);
+            int hooked = hookDeclaredMethod(
+                    targetClass,
+                    TEXT_INTENT_ENTRY_METHOD,
+                    blockTextIntentEntryHook(),
+                    false,
+                    "void",
+                    "android.content.Context",
+                    "java.lang.Object",
+                    "java.lang.String",
+                    "java.lang.String");
+            if (hooked == 0) {
+                throw new NoSuchMethodException(TEXT_INTENT_MANAGER + "."
+                        + TEXT_INTENT_ENTRY_METHOD);
+            }
+            log("✅ named TextIntent fallback installed: " + TEXT_INTENT_MANAGER + "."
+                    + TEXT_INTENT_ENTRY_METHOD + " (overloads=" + hooked + ")");
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ named TextIntent fallback unavailable: " + TEXT_INTENT_MANAGER + "."
+                    + TEXT_INTENT_ENTRY_METHOD);
+            XposedBridge.log(throwable);
+            return false;
+        }
     }
 
     private static boolean hookColorDirectSemanticMethods(DexKitSemanticResolver resolver) {
@@ -497,6 +529,14 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
                                 "com.oplus.ointent.api.config.IntentType[]", "java.lang.String",
                                 "java.lang.String", "com.oplus.ointent.api.base.IntentOptions"},
                         "typeList", "name", "text"),
+                blockOIntentTypeListHook());
+        hooked |= hookResolvedMethod(
+                "OIntentApi.detect type list without options",
+                resolveSemanticMethod(resolver, "OIntentApi.detect type list without options",
+                        new String[]{"com.oplus.ointent.detect"}, new String[]{"OIntentApi"},
+                        true, "java.util.List", new String[]{"android.content.Context",
+                                "com.oplus.ointent.api.config.IntentType[]", "java.lang.String",
+                                "java.lang.String"}, "typeList", "name", "text"),
                 blockOIntentTypeListHook());
         return hooked;
     }
@@ -679,6 +719,16 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
                     "java.lang.String",
                     "java.lang.String",
                     OINTENT_INTENT_OPTIONS);
+            hooked += hookDeclaredMethod(
+                    targetClass,
+                    OINTENT_DETECT_METHOD,
+                    blockOIntentTypeListHook(),
+                    true,
+                    "java.util.List",
+                    "android.content.Context",
+                    OINTENT_INTENT_TYPE_ARRAY,
+                    "java.lang.String",
+                    "java.lang.String");
             if (hooked == 0) {
                 throw new NoSuchMethodException(OINTENT_API_CLASS + "."
                         + OINTENT_DETECT_METHOD);

@@ -24,8 +24,17 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static final String SYSTEM_APP_PROCESS = "system";
     private static final String TARGET_PACKAGE = "com.oplus.appplatform";
     private static final String COLOR_DIRECT_SERVICE_PACKAGE = "com.coloros.colordirectservice";
+    private static final String COLOR_DIRECT_CLIPBOARD_LISTENER_CLASS =
+            "com.coloros.colordirectservice.core.AbstractDirectService$c";
+    private static final String COLOR_DIRECT_CLIPBOARD_LISTENER_METHOD = "onPrimaryClipChanged";
     private static final String TARGET_PROVIDER =
             "com.oplus.appplatform.providers.ClipboardManagerProvider";
+    private static final String APP_PLATFORM_CLIPBOARD_LISTENER_CLASS =
+            "com.oplus.appplatform.providers.ClipboardManagerProvider$ClipboardChangedCallbackListener";
+    private static final String APP_PLATFORM_CLIPBOARD_LISTENER_METHOD = "onPrimaryClipChanged";
+    private static final String CLIPBOARD_SERVICE_CLASS =
+            "com.android.server.clipboard.ClipboardService";
+    private static final String CLIPBOARD_SERVICE_EXTENSION_FIELD = "mClipboardServiceExt";
     private static final String OINTENT_API_CLASS =
             "com.oplus.ointent.detect.OIntentApi";
     private static final String OINTENT_DETECT_METHOD = "detect";
@@ -62,6 +71,16 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     private static final AtomicBoolean APP_PLATFORM_SYSTEM_INSTALLED =
             new AtomicBoolean(false);
     private static final AtomicBoolean COLOR_DIRECT_SERVICE_INSTALLED = new AtomicBoolean(false);
+    private static final AtomicBoolean APP_PLATFORM_LISTENER_HIT_LOGGED =
+            new AtomicBoolean(false);
+    private static final AtomicBoolean COLOR_DIRECT_LISTENER_HIT_LOGGED =
+            new AtomicBoolean(false);
+    private static final AtomicBoolean SYSTEM_EXTENSION_HOOKS_LOGGED =
+            new AtomicBoolean(false);
+    private static final AtomicBoolean SYSTEM_EXTENSION_FAILURE_LOGGED =
+            new AtomicBoolean(false);
+    private static final AtomicBoolean SYSTEM_AI_CLASSIFICATION_HIT_LOGGED =
+            new AtomicBoolean(false);
     private static final AtomicBoolean OINTENT_DETECT_HIT_LOGGED =
             new AtomicBoolean(false);
     private static final AtomicBoolean OINTENT_TYPE_LIST_HIT_LOGGED =
@@ -179,6 +198,7 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     }
 
     private static void installSystemServerHooks(ClassLoader classLoader) {
+        boolean runtimeExtensionDiscoveryHooked = hookRuntimeClipboardExtension(classLoader);
         boolean preprocessHooked = hookPreprocessMethod(classLoader);
         boolean controllerHooked = hookClassificationMethod(
                 classLoader, CLIPBOARD_CONTROLLER, CLASSIFICATION_METHOD);
@@ -192,7 +212,8 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
         boolean classifierSendHooked = hookClassifierSend(classLoader);
         boolean clipboardRecordHooked = hookClipboardRecordMethod(classLoader);
 
-        if (!preprocessHooked && !controllerHooked && !serviceForwardHooked
+        if (!runtimeExtensionDiscoveryHooked && !preprocessHooked
+                && !controllerHooked && !serviceForwardHooked
                 && !dispatchHooked && !pendingMessageHooked && !classifierSendHooked
                 && !clipboardRecordHooked) {
             SYSTEM_SERVER_INSTALLED.set(false);
@@ -200,7 +221,9 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
             return;
         }
 
-        log("✅ system_server hooks installed; preprocess=" + preprocessHooked
+        log("✅ system_server hooks installed; runtimeExtensionDiscovery="
+                + runtimeExtensionDiscoveryHooked
+                + ", preprocess=" + preprocessHooked
                 + ", controller=" + controllerHooked
                 + ", serviceForwardFallback=" + serviceForwardHooked
                 + ", dispatch=" + dispatchHooked
@@ -208,6 +231,70 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
                 + ", classifierSend=" + classifierSendHooked
                 + ", clipboardRecord=" + clipboardRecordHooked
                 + ", total=" + HOOKED_METHODS.size());
+    }
+
+    private static boolean hookRuntimeClipboardExtension(ClassLoader classLoader) {
+        try {
+            Class<?> clipboardService = XposedHelpers.findClass(
+                    CLIPBOARD_SERVICE_CLASS, classLoader);
+            XposedBridge.hookAllConstructors(clipboardService,
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            installRuntimeClipboardExtensionHooks(param.thisObject);
+                        }
+                    });
+            log("✅ runtime clipboard extension discovery hook installed");
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ runtime clipboard extension discovery unavailable");
+            XposedBridge.log(throwable);
+            return false;
+        }
+    }
+
+    private static void installRuntimeClipboardExtensionHooks(Object clipboardService) {
+        try {
+            Object extension = XposedHelpers.getObjectField(
+                    clipboardService, CLIPBOARD_SERVICE_EXTENSION_FIELD);
+            if (extension == null) {
+                return;
+            }
+            int hooked = hookInstanceMethod(
+                    extension,
+                    CLASSIFICATION_FORWARD_METHOD,
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (SYSTEM_AI_CLASSIFICATION_HIT_LOGGED.compareAndSet(false, true)) {
+                                log("🧹 blocked runtime Oplus clipboard AI classification (first hit)");
+                            }
+                            param.setResult(null);
+                        }
+                    },
+                    "void",
+                    "android.os.Looper",
+                    "android.content.ClipData",
+                    "java.lang.String",
+                    "int",
+                    "int");
+            if (hooked == 0) {
+                if (SYSTEM_EXTENSION_FAILURE_LOGGED.compareAndSet(false, true)) {
+                    log("⚠️ runtime clipboard extension exposes no supported AI hook: "
+                            + extension.getClass().getName());
+                }
+                return;
+            }
+            if (SYSTEM_EXTENSION_HOOKS_LOGGED.compareAndSet(false, true)) {
+                log("✅ runtime Oplus clipboard extension hook installed: "
+                        + extension.getClass().getName());
+            }
+        } catch (Throwable throwable) {
+            if (SYSTEM_EXTENSION_FAILURE_LOGGED.compareAndSet(false, true)) {
+                log("⚠️ runtime Oplus clipboard extension hook unavailable");
+                XposedBridge.log(throwable);
+            }
+        }
     }
 
     private static boolean hookPreprocessMethod(ClassLoader classLoader) {
@@ -423,12 +510,25 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
 
     private static void installAppPlatformHook(
             ClassLoader classLoader, String processName, AtomicBoolean installState) {
+        boolean registrationHooked = hookAppPlatformRegistration(classLoader);
+        boolean listenerHooked = hookAppPlatformClipboardListener(classLoader);
+        if (!registrationHooked && !listenerHooked) {
+            installState.set(false);
+            log("❌ no appplatform clipboard hook installed in " + processName);
+            return;
+        }
+        log("✅ semantic appplatform hooks installed in " + processName
+                + "; registration=" + registrationHooked
+                + ", callback=" + listenerHooked);
+    }
+
+    private static boolean hookAppPlatformRegistration(ClassLoader classLoader) {
         try {
             Class<?> targetClass = findClassInLoaderChain(TARGET_PROVIDER, classLoader);
             int hooked = hookDeclaredMethod(
                     targetClass,
                     "addPrimaryClipChangedListener",
-                    new XC_MethodHook(XC_MethodHook.PRIORITY_HIGHEST) {
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
                             param.setResult(null);
@@ -439,16 +539,46 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
                     "com.oplus.epona.Request",
                     "com.oplus.epona.Call$Callback");
             if (hooked == 0) {
-                throw new NoSuchMethodException(TARGET_PROVIDER + ".addPrimaryClipChangedListener");
+                throw new NoSuchMethodException(TARGET_PROVIDER
+                        + ".addPrimaryClipChangedListener");
             }
-            log("✅ semantic appplatform hook installed in " + processName
-                    + " (overloads=" + hooked + ")");
+            return true;
         } catch (Throwable throwable) {
-            installState.set(false);
-            log("❌ appplatform hook installation failed in " + processName);
+            log("⚠️ appplatform clipboard registration hook unavailable");
             XposedBridge.log(throwable);
+            return false;
         }
     }
+    private static boolean hookAppPlatformClipboardListener(ClassLoader classLoader) {
+        try {
+            Class<?> targetClass = findClassInLoaderChain(
+                    APP_PLATFORM_CLIPBOARD_LISTENER_CLASS, classLoader);
+            int hooked = hookDeclaredMethod(
+                    targetClass,
+                    APP_PLATFORM_CLIPBOARD_LISTENER_METHOD,
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (APP_PLATFORM_LISTENER_HIT_LOGGED.compareAndSet(false, true)) {
+                                log("🧹 blocked appplatform clipboard callback (first hit)");
+                            }
+                            param.setResult(null);
+                        }
+                    },
+                    false,
+                    "void");
+            if (hooked == 0) {
+                throw new NoSuchMethodException(APP_PLATFORM_CLIPBOARD_LISTENER_CLASS + "."
+                        + APP_PLATFORM_CLIPBOARD_LISTENER_METHOD);
+            }
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ direct appplatform clipboard callback hook unavailable");
+            XposedBridge.log(throwable);
+            return false;
+        }
+    }
+
     private static Class<?> findClassInLoaderChain(
             String className, ClassLoader classLoader) throws ClassNotFoundException {
         ClassLoader current = classLoader;
@@ -463,6 +593,7 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
     }
 
     private static void installColorDirectServiceHook(ClassLoader classLoader, String processName) {
+        boolean listenerHooked = hookColorDirectClipboardListener(classLoader);
         boolean semanticHooked = false;
         DexKitSemanticResolver resolver = DexKitSemanticResolver.tryCreate(classLoader, false);
         if (resolver != null) {
@@ -476,18 +607,51 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
         boolean sceneHooked = hookClipboardSceneDetect(classLoader);
         boolean apiHooked = hookOIntentClipboardDetect(classLoader);
 
-        if (!semanticHooked && !sceneHooked && !apiHooked) {
+        if (!listenerHooked && !semanticHooked && !sceneHooked && !apiHooked) {
             COLOR_DIRECT_SERVICE_INSTALLED.set(false);
             log("❌ no semantic ColorDirectService clipboard hook installed");
             return;
         }
 
         log("✅ semantic ColorDirectService hooks installed in " + processName
-                + "; dexkit=" + semanticHooked
+                + "; listener=" + listenerHooked
+                + ", dexkit=" + semanticHooked
                 + ", scene=" + sceneHooked
                 + ", ointent=" + apiHooked);
     }
 
+
+    private static boolean hookColorDirectClipboardListener(ClassLoader classLoader) {
+        try {
+            Class<?> targetClass = XposedHelpers.findClass(
+                    COLOR_DIRECT_CLIPBOARD_LISTENER_CLASS, classLoader);
+            int hooked = hookDeclaredMethod(
+                    targetClass,
+                    COLOR_DIRECT_CLIPBOARD_LISTENER_METHOD,
+                    new XC_MethodHook(PRIORITY_HIGHEST) {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (COLOR_DIRECT_LISTENER_HIT_LOGGED.compareAndSet(false, true)) {
+                                log("🧹 blocked ColorDirect clipboard listener (first hit)");
+                            }
+                            param.setResult(null);
+                        }
+                    },
+                    false,
+                    "void");
+            if (hooked == 0) {
+                throw new NoSuchMethodException(COLOR_DIRECT_CLIPBOARD_LISTENER_CLASS + "."
+                        + COLOR_DIRECT_CLIPBOARD_LISTENER_METHOD);
+            }
+            log("✅ direct ColorDirect clipboard listener hook installed (overloads="
+                    + hooked + ")");
+            return true;
+        } catch (Throwable throwable) {
+            log("⚠️ direct ColorDirect clipboard listener hook unavailable");
+            XposedBridge.log(throwable);
+            return false;
+        }
+    }
 
     private static boolean hookColorDirectSemanticMethods(DexKitSemanticResolver resolver) {
         boolean hooked = false;
@@ -758,6 +922,22 @@ public final class ClipboardLagBlocker implements IXposedHookLoadPackage, IXpose
         return false;
     }
 
+
+    private static int hookInstanceMethod(
+            Object target,
+            String methodName,
+            XC_MethodHook callback,
+            String expectedReturnTypeName,
+            String... expectedParameterTypeNames) {
+        for (Class<?> current = target.getClass(); current != null; current = current.getSuperclass()) {
+            int hooked = hookDeclaredMethod(current, methodName, callback, false,
+                    expectedReturnTypeName, expectedParameterTypeNames);
+            if (hooked > 0) {
+                return hooked;
+            }
+        }
+        return 0;
+    }
 
     private static int hookDeclaredMethod(
             Class<?> targetClass,

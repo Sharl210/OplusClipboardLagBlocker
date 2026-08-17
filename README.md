@@ -1,15 +1,23 @@
 # OplusClipboardLagBlocker
 
+当前发布版本：`1.5.6`（`versionCode=12`）。
+
 用于 ColorOS / realme Android 16 的 Xposed 剪贴板卡顿拦截模块。
 
 ## 作用
 
-模块提供四层剪贴板拦截：
+模块保留原有四层剪贴板拦截，并叠加三个由目标 ROM 反编译确认的直接入口：
 
 1. 在 Zygote 阶段拦截框架类 `android.content.ClipboardManagerExtImpl.checkBeforeSetPrimaryClip(String, ClipData)`，跳过应用侧复制前的调用栈采集、写入路径遍历与规则匹配；保留来源包名写入，不主动重写已有的 `ClipDataExt` 用户写入标记。
 2. 在 `system_server` 中拦截 `ClipboardServiceExtImpl.onCommonSetPrimaryClipLocked(Context, boolean, ClipData)` 与 `OplusClipboardController.updateClipboardOpRecord(String, int, boolean)`，阻断复制后的同步文本统计、调用方哈希计算、遥测上报和写入记录。
 3. 拦截 ColorOS AI 分类链路：`OplusClipboardController.startAIClassification(...)`、`ClipboardServiceExtImpl.startAIClassificationLocked(...)`、`OplusClipboardController.handleAIClassification(...)`、`OplusClipboardController$ClassificationHandler.handleMessage(Message)` 与 `AITextClassifierDelegate.sendAITextClassification(...)`；分类发送 Hook 同时兼容带 `long` 时间戳和旧版无时间戳签名。保留 `com.oplus.appplatform` 监听 Hook 作为兼容保险。
 4. 在 `com.coloros.colordirectservice` 中通过 DexKit 按包范围、方法签名、行为字符串和唯一候选约束解析 TextIntent 剪贴板入口；同时以稳定的 `ClipboardScene.detect(IntentInput, IntentOutput)` 与 `OIntentApi.detect(...)` 的 scene/type-list 重载作为回退入口，阻断复制内容进入异步意图识别、AI/NLP 和流动胶囊链路。
+
+以上原有 Hook 全部保留。`1.5.6` 额外新增：
+
+- 从 `ClipboardService.mClipboardServiceExt` 运行时实例上 Hook `startAIClassificationLocked(...)`，覆盖实现类名变化或原命名类不可见的情况。
+- 继续保留 `ClipboardManagerProvider.addPrimaryClipChangedListener(...)` 注册入口，同时直接 Hook `ClipboardChangedCallbackListener.onPrimaryClipChanged()`，阻断已经注册的 Epona 剪贴板回调。
+- 直接 Hook `AbstractDirectService$c.onPrimaryClipChanged()`，在其汇总剪贴板全文并以 `ai_text` 启动 DirectUI 前终止。
 
 以上均为入口级阻断，不修改系统设置或剪贴板正文；应用侧 Hook 会跳过 ColorOS 的复制来源规则识别。
 
@@ -53,7 +61,7 @@
 app/build/outputs/apk/release/app-release.apk
 ```
 
-当前工程的 Release 构建沿用 Android Gradle Plugin 的 debug 签名，适合个人设备安装和验证，不代表正式发布签名。
+构建产物应显示 `versionCode=12`、`versionName=1.5.6`。当前工程的 Release 构建沿用 Android Gradle Plugin 的 debug 签名，适合个人设备安装和验证，不代表正式发布签名。
 
 启用模块并重启后，可查看带醒目前缀的 Xposed 日志：
 
@@ -61,7 +69,7 @@ app/build/outputs/apk/release/app-release.apk
 adb logcat -d | grep -F '🛡️ OplusClipboardLagBlocker'
 ```
 
-应看到 Zygote、`system_server`、`system`/`com.oplus.appplatform` 和 `ColorDirectService` 的安装结果，以及首次复制后的相应 `blocked ... (first hit)` 日志；`system_server` 安装行还会报告 `total=N`。复制文本后不应再执行应用侧写入路径规则匹配、系统侧预处理、分类排队、分类服务发送、写入记录或 ColorDirectService 的 TextIntent 识别。是否完全消除卡顿仍需在目标设备上以相同文本和前台应用复测。
+应看到 Zygote、`system_server`、`system`/`com.oplus.appplatform` 和 `ColorDirectService` 的安装结果；其中新增日志应包含运行时扩展、appplatform直接回调和ColorDirect直接监听器，以及首次复制后的相应 `blocked ... (first hit)` 日志；`system_server` 安装行还会报告 `total=N`。复制文本后不应再执行应用侧写入路径规则匹配、系统侧预处理、分类排队、分类服务发送、写入记录或 ColorDirectService 的 TextIntent 识别。是否完全消除卡顿仍需在目标设备上以相同文本和前台应用复测。
 
 ## 回滚
 
